@@ -1,0 +1,5 @@
+playwright>=1.55,<2
+PyYAML>=6.0,<7
+python-dotenv>=1.1,<2
+pytest>=8.4,<9
+

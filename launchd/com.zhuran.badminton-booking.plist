@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.zhuran.badminton-booking</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>/Users/zhuran/Desktop/badminton_booking_live/.venv/bin/python</string>
+    <string>/Users/zhuran/Desktop/badminton_booking_live/main.py</string>
+    <string>--live</string>
+    <string>--release-delay-seconds</string>
+    <string>70</string>
+  </array>
+
+  <key>WorkingDirectory</key>
+  <string>/Users/zhuran/Desktop/badminton_booking_live</string>
+
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>LIVE_BOOKING_CONFIRM</key>
+    <string>I_UNDERSTAND_THIS_CREATES_REAL_BOOKINGS</string>
+  </dict>
+
+  <key>StartCalendarInterval</key>
+  <dict>
+    <key>Hour</key>
+    <integer>7</integer>
+    <key>Minute</key>
+    <integer>59</integer>
+  </dict>
+
+  <key>ProcessType</key>
+  <string>Interactive</string>
+
+  <key>StandardOutPath</key>
+  <string>/Users/zhuran/Desktop/badminton_booking_live/logs/launchd.out.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/zhuran/Desktop/badminton_booking_live/logs/launchd.err.log</string>
+</dict>
+</plist>

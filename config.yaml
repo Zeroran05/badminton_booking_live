@@ -1,0 +1,51 @@
+portal:
+  url: "https://dxcdp.hitsz.edu.cn/portal/"
+  service_name: "羽毛球场地预约"
+  login_wait_seconds: 600
+
+auth:
+  auto_fill_credentials: true
+  auto_submit_login: true
+
+browser:
+  channel: "msedge"
+  headless: false
+  # 正式抢位不人为放慢浏览器操作；调试时可临时改回 300-500。
+  slow_mo: 0
+  profile_dir: "data/edge_profile"
+
+booking:
+  # 正式提交需要同时满足：这里为 true、命令行带 --live、且 .env 中
+  # LIVE_BOOKING_CONFIRM=I_UNDERSTAND_THIS_CREATES_REAL_BOOKINGS。
+  live_enabled: true
+  max_successful_bookings: 2
+  max_submission_attempts: 2
+  venue_priority: [2, 3, 1, 4, 5, 6]
+  time_groups:
+    - name: afternoon
+      priority: 1
+      slots: ["15:00-16:00", "16:00-17:00"]
+    - name: evening_early
+      priority: 2
+      slots: ["19:00-20:00", "20:00-21:00"]
+    - name: evening_late
+      priority: 3
+      slots: ["20:00-21:00", "21:00-22:00"]
+    - name: morning
+      priority: 4
+      slots: ["10:00-11:00", "11:00-12:00"]
+  prefer_consecutive: true
+  allow_different_venues_for_consecutive_hours: true
+
+scheduler:
+  timezone: "Asia/Shanghai"
+  daily_at: "08:00:00"
+  browser_preopen_seconds: 60
+  # 服务器开放时钟可能比本机慢数秒；该提示不占用两次预约提交额度。
+  release_retry_interval_seconds: 0.5
+  retry_interval_seconds: 3
+  retry_window_seconds: 120
+
+safety:
+  # 非 --live 模式下阻止所有可能写数据的 HTTP 方法。
+  read_only_post_url_patterns: []
