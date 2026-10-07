@@ -39,7 +39,7 @@
 下面的仓库地址是占位符，请替换成实际 Git 地址。命令会统一把代码克隆到 `badminton_booking_live` 目录。
 
 ```bash
-git clone https://github.com/YOUR_NAME/YOUR_REPOSITORY.git badminton_booking_live
+git clone https://github.com/Zeroran05/badminton_booking_live.git 
 cd badminton_booking_live
 ```
 
