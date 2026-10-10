@@ -42,6 +42,11 @@ LIVE_CONFIRMATION = "I_UNDERSTAND_THIS_CREATES_REAL_BOOKINGS"
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="HITsz badminton booking scheduler")
+    parser.add_argument(
+        "--config",
+        default="config.yaml",
+        help="Configuration file path (relative paths are resolved from the project directory)",
+    )
     parser.add_argument("--live", action="store_true", help="Allow real booking submission")
     parser.add_argument("--run-now", action="store_true", help="Run immediately instead of next 08:00")
     parser.add_argument(
@@ -56,8 +61,11 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def load_config() -> dict[str, Any]:
-    with (ROOT / "config.yaml").open(encoding="utf-8") as handle:
+def load_config(path: str | Path = "config.yaml") -> dict[str, Any]:
+    config_path = Path(path)
+    if not config_path.is_absolute():
+        config_path = ROOT / config_path
+    with config_path.open(encoding="utf-8") as handle:
         return yaml.safe_load(handle)
 
 
@@ -112,7 +120,7 @@ async def return_to_booking_form(page, logger) -> bool:
 async def run(args: argparse.Namespace) -> int:
     load_dotenv(ROOT / ".env")
     logger = setup_logger(ROOT / "logs")
-    config = load_config()
+    config = load_config(args.config)
     context = None
     page = None
 

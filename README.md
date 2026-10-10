@@ -13,6 +13,56 @@
 - 每次运行最多成功两笔；服务器“尚未开放”的临时拒绝不占用预约额度。
 - 第一笔成功后直接返回预约页，不重新绕行信息门户。
 
+## 图形控制页面（推荐）
+
+不想每次输入完整命令时，可以启动本机控制页面。它只监听 `127.0.0.1`，不会发布到公网，也不会在页面中显示账号或密码。
+
+macOS / Ubuntu：
+
+```bash
+cd /path/to/badminton_booking_live
+.venv/bin/python ui_server.py
+```
+
+Windows PowerShell：
+
+```powershell
+Set-Location "C:\path\to\badminton_booking_live"
+.\.venv\Scripts\python.exe .\ui_server.py
+```
+
+浏览器会自动打开 `http://127.0.0.1:8765`。页面支持：
+
+- 一键开启定时真实预约，启动前仍需确认一次；
+- 勾选可接受的两小时时间段、添加 `08:00–22:00` 范围内的自定义连续两小时，并调整尝试顺序；
+- 调整 1–6 号场地的优先级；
+- 修改默认的 `70` 秒延时；
+- 立即运行安全测试、查看实时日志和停止任务。
+
+页面设置自动保存在 `data/ui_settings.json`，未调整时使用 `config.yaml` 的现有默认值。`data/` 已被 Git 忽略，不会上传个人偏好。控制页面运行期间请保持终端窗口开启；macOS 上从页面启动任务时会自动使用 `caffeinate -is`。
+
+### 双击启动控制页面
+
+- macOS：在 Finder 中双击 `start_ui.command`。首次运行如果被系统拦截，右键该文件选择“打开”，以后即可直接双击。
+- Windows：双击 `start_ui.bat`。
+
+两个启动文件都会自动定位到项目目录，因此不需要先打开终端或手动输入路径。
+
+### 像 macOS 应用一样打开
+
+项目内还提供了 `macos/BadmintonBooking.app`。在 Finder 中双击它会在后台启动服务并打开控制页面，不会额外显示终端窗口。可以把它拖到 Dock，以后直接点击 Dock 图标打开。
+
+这个 `.app` 使用相对于项目的路径，因此不要单独把它移出项目文件夹；拖到 Dock 只是创建快捷入口，不会移动文件。应用和其中的启动脚本都可以正常提交到 Git。
+
+### 可选的自动唤醒
+
+macOS 控制页面中可以勾选“每天 07:57 自动唤醒 Mac”，然后点击“应用唤醒设置”。系统会弹出管理员密码窗口，并调用 macOS 自带的 `pmset`：
+
+- 勾选并应用：设置每天 `07:57` 自动唤醒或开机；
+- 取消勾选并应用：取消重复唤醒计划；
+- 该选项会替换 macOS 当前已有的重复唤醒计划；
+- 自动唤醒不能输入登录密码，也不能保证普通合盖状态下可靠唤醒。最可靠状态仍是接电、开盖、用户已登录并锁屏。
+
 ## 为什么标准延时是 70 秒
 
 网站标称每天 `08:00` 开放次日预约，但连续三天的提交日志显示，后端实际放行时间稳定在本机时间 `08:01:17` 左右：
@@ -175,15 +225,26 @@ Windows PowerShell 对应命令：
 
 下面的绝对路径仅适用于当前开发电脑，其他使用者不应照抄，应使用前文的通用项目路径。
 
+推荐打开图形控制页面：
+
 ```bash
-cd /Users/zhuran/Desktop/badminton_booking_live
+cd /Users/zhuran/badminton_booking_live
+.venv/bin/python ui_server.py
+```
+
+也可以直接在 Finder 中双击项目里的 `start_ui.command`。
+
+如需继续使用原来的命令行方式：
+
+```bash
+cd /Users/zhuran/badminton_booking_live
 caffeinate -is env LIVE_BOOKING_CONFIRM=I_UNDERSTAND_THIS_CREATES_REAL_BOOKINGS .venv/bin/python main.py --live --release-delay-seconds 70
 ```
 
 立即真实执行仅用于明确需要现在预约时。`--run-now` 会忽略定时等待和 `70` 秒延时：
 
 ```bash
-cd /Users/zhuran/Desktop/badminton_booking_live
+cd /Users/zhuran/badminton_booking_live
 env LIVE_BOOKING_CONFIRM=I_UNDERSTAND_THIS_CREATES_REAL_BOOKINGS .venv/bin/python main.py --live --run-now
 ```
 
@@ -221,6 +282,20 @@ sudo pmset repeat cancel
 可以在仓库根目录把下面这段话直接发给 Codex：
 
 > 请检测当前操作系统，并按照 README 的 macOS、Windows 或 Ubuntu 部署步骤安装此项目。创建项目内的 `.venv`，安装 `requirements.txt` 和 Microsoft Edge Playwright 通道，复制 `.env.example` 为 `.env`，但不要读取、填写或输出任何账号密码，也不要执行 `--live`。最后运行测试并告诉我如何在本机填写 `.env`。正式命令必须保留 `--release-delay-seconds 70`。
+
+## 上传更新到 GitHub
+
+本仓库已经连接到 `https://github.com/Zeroran05/badminton_booking_live.git`，当前分支为 `main`。确认 `git status` 中没有个人文件后，可以运行：
+
+```bash
+cd /Users/zhuran/badminton_booking_live
+git status
+git add .
+git commit -m "Add local booking dashboard"
+git push
+```
+
+`.env`、`data/`、浏览器资料、日志和截图都已加入 `.gitignore`。`start_ui.command` 的可执行权限也会由 Git 一并保存，其他 macOS 用户克隆后可以直接使用。
 
 ## 结果与排错
 

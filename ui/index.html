@@ -1,0 +1,103 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="light" />
+    <title>羽球预约控制台</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <main class="shell">
+      <header class="hero">
+        <div>
+          <p class="eyebrow">HITSZ · 本地运行</p>
+          <h1>羽球预约控制台</h1>
+          <p class="subtitle">选好偏好，剩下的交给程序。设置会自动保存在这台电脑上。</p>
+        </div>
+        <div class="status-pill" id="statusPill"><span></span><b>正在连接</b></div>
+      </header>
+
+      <section class="notice" id="credentialNotice" hidden>
+        <strong>账号信息尚未准备好</strong>
+        <span>请先在项目根目录的 <code>.env</code> 中填写手机号、账号和密码。</span>
+      </section>
+
+      <div class="grid">
+        <section class="panel time-panel">
+          <div class="section-heading">
+            <div><span class="step">01</span><h2>想抢的时间</h2></div>
+            <p>勾选可接受的两小时窗口，上面的优先尝试。</p>
+          </div>
+          <div class="sortable-list" id="timeGroups"></div>
+          <div class="custom-time">
+            <div>
+              <strong>添加自定义时间</strong>
+              <small>每次预约连续两小时</small>
+            </div>
+            <select id="customStart" aria-label="自定义时间开始时刻"></select>
+            <button class="button secondary" id="addTimeButton">添加</button>
+          </div>
+        </section>
+
+        <section class="panel venue-panel">
+          <div class="section-heading">
+            <div><span class="step">02</span><h2>场地优先级</h2></div>
+            <p>数字越靠上，越优先尝试。</p>
+          </div>
+          <div class="venue-list" id="venuePriority"></div>
+        </section>
+      </div>
+
+      <section class="panel launch-panel">
+        <div class="launch-copy">
+          <span class="step">03</span>
+          <div>
+            <h2>开启预约</h2>
+            <p>程序会提前 1 分钟进入门户，并在 08:00 后延时 <label><input id="delay" type="number" min="0" max="600" step="1" /> 秒</label> 打开预约板块。</p>
+            <div class="wake-option" id="wakeOption" hidden>
+              <label class="switch-row">
+                <input id="wakeEnabled" type="checkbox" />
+                <span><strong>每天 07:57 自动唤醒 Mac</strong><small>可选；合盖状态下不保证能够唤醒</small></span>
+              </label>
+              <button class="text-button" id="applyWakeButton">应用唤醒设置</button>
+              <small class="wake-warning">会替换 macOS 当前的重复唤醒计划；取消后点击“应用”会取消该计划。</small>
+            </div>
+          </div>
+        </div>
+        <div class="actions">
+          <button class="button secondary" id="dryRunButton">立即安全测试</button>
+          <button class="button danger" id="stopButton" hidden>停止任务</button>
+          <button class="button primary" id="startButton">一键开启预约 <span>→</span></button>
+        </div>
+      </section>
+
+      <section class="panel console-panel">
+        <div class="console-heading">
+          <div>
+            <h2>运行状态</h2>
+            <p id="runSummary">尚未启动任务</p>
+          </div>
+          <button class="text-button" id="clearLogs">清空显示</button>
+        </div>
+        <pre id="logs" aria-live="polite">等待启动…</pre>
+      </section>
+    </main>
+
+    <dialog id="confirmDialog">
+      <form method="dialog">
+        <p class="eyebrow">最后确认</p>
+        <h2>开启后会真实提交预约</h2>
+        <p>任务会按照当前时间和场地优先级运行，最多预约两笔。请保持电脑接电、开盖且不要退出登录。</p>
+        <label class="confirm-check"><input id="confirmCheck" type="checkbox" /> 我确认使用的是本人账号，并同意真实提交预约</label>
+        <div class="dialog-actions">
+          <button class="button secondary" value="cancel">取消</button>
+          <button class="button primary" id="confirmStart" value="default" disabled>确认开启</button>
+        </div>
+      </form>
+    </dialog>
+
+    <div class="toast" id="toast" role="status" hidden></div>
+    <script src="/app.js" defer></script>
+  </body>
+</html>

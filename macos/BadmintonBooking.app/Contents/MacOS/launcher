@@ -1,0 +1,19 @@
+#!/bin/zsh
+
+set -u
+PROJECT_DIR="$(cd "$(dirname "$0")/../../../.." && pwd)"
+PYTHON="$PROJECT_DIR/.venv/bin/python"
+URL="http://127.0.0.1:8765"
+
+if /usr/bin/curl -fsS "$URL/api/status" >/dev/null 2>&1; then
+  /usr/bin/open "$URL"
+  exit 0
+fi
+
+if [[ ! -x "$PYTHON" ]]; then
+  /usr/bin/osascript -e 'display dialog "尚未找到项目虚拟环境。请先按照 README 完成安装。" buttons {"好"} default button "好" with title "羽毛球预约控制台"'
+  exit 1
+fi
+
+/bin/mkdir -p "$PROJECT_DIR/data"
+exec "$PYTHON" "$PROJECT_DIR/ui_server.py" >>"$PROJECT_DIR/data/ui_server.log" 2>&1
