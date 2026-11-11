@@ -13,11 +13,19 @@ from models import Availability, BookingAttemptResult, BookingError, BookingStat
 
 
 EXPECTED_SLOTS = [f"{hour:02d}:00-{hour + 1:02d}:00" for hour in range(8, 22)]
+
+
 def is_release_not_open_message(message: str) -> bool:
     """Return True only for the server's temporary release-gate rejection."""
     normalized = re.sub(r"\s+", " ", message).strip()
     mentions_release_time = any(marker in normalized for marker in ("8:00", "8点"))
     return mentions_release_time and "开放预约" in normalized and "再试" in normalized
+
+
+def is_transient_selection_conflict_message(message: str) -> bool:
+    """Detect the form/session residue seen after release-gate retries."""
+    normalized = re.sub(r"\s+", " ", message).strip()
+    return "时间已被选中" in normalized and "选择其他时间" in normalized
 
 
 def slot_to_input_value(slot: str) -> str:

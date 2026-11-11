@@ -4,7 +4,8 @@ import pytest
 
 from availability import build_availability, classify_slot, normalize_slot
 from booking_page import submission_blocked
-from models import Availability, SlotStatus
+from models import Availability, BookingPlan, SlotStatus
+from main import should_parallelize_plan
 from strategy import choose_continuation_plan, choose_plan
 from browser import NetworkObserver
 from live_booking import has_consecutive_pair, slot_to_input_value
@@ -104,6 +105,32 @@ def test_continuation_prefers_the_original_venue() -> None:
     )
     assert plan is not None
     assert plan.selections == [(6, "16:00-17:00")]
+
+
+def test_same_venue_pair_uses_parallel_path() -> None:
+    plan = BookingPlan(
+        "2026-11-12",
+        [(2, "15:00-16:00"), (2, "16:00-17:00")],
+        "afternoon:same_venue",
+    )
+    assert should_parallelize_plan(plan, set(), effective_max=2, enabled=True)
+
+
+def test_parallel_path_rejects_different_venues_or_existing_success() -> None:
+    different = BookingPlan(
+        "2026-11-12",
+        [(2, "15:00-16:00"), (3, "16:00-17:00")],
+        "afternoon:different_venues",
+    )
+    same = BookingPlan(
+        "2026-11-12",
+        [(2, "15:00-16:00"), (2, "16:00-17:00")],
+        "afternoon:same_venue",
+    )
+    assert not should_parallelize_plan(different, set(), effective_max=2, enabled=True)
+    assert not should_parallelize_plan(
+        same, {(2, "14:00-15:00")}, effective_max=2, enabled=True
+    )
 
 
 def test_early_stop_detects_highest_priority_pair() -> None:

@@ -16,4 +16,20 @@ if [[ ! -x "$PYTHON" ]]; then
 fi
 
 /bin/mkdir -p "$PROJECT_DIR/data"
-exec "$PYTHON" "$PROJECT_DIR/ui_server.py" >>"$PROJECT_DIR/data/ui_server.log" 2>&1
+
+# Keep the local dashboard server independent from the macOS launcher.  The
+# launcher must exit after opening the browser; otherwise LaunchServices keeps
+# the app marked as running and later double-clicks never execute this script.
+/usr/bin/nohup "$PYTHON" "$PROJECT_DIR/ui_server.py" --no-open \
+  >>"$PROJECT_DIR/data/ui_server.log" 2>&1 </dev/null &
+
+for _ in {1..50}; do
+  if /usr/bin/curl -fsS "$URL/api/status" >/dev/null 2>&1; then
+    /usr/bin/open "$URL"
+    exit 0
+  fi
+  /bin/sleep 0.1
+done
+
+/usr/bin/osascript -e 'display dialog "控制台服务启动失败，请查看 data/ui_server.log。" buttons {"好"} default button "好" with title "羽毛球预约控制台"'
+exit 1

@@ -2,6 +2,9 @@ portal:
   url: "https://dxcdp.hitsz.edu.cn/portal/"
   service_name: "羽毛球场地预约"
   login_wait_seconds: 600
+  # 8:00 高峰时新标签页和预约表单可能延迟出现，不能把门户首页误判成预约页。
+  service_open_wait_seconds: 15
+  service_render_wait_seconds: 15
 
 auth:
   auto_fill_credentials: true
@@ -19,7 +22,10 @@ booking:
   # LIVE_BOOKING_CONFIRM=I_UNDERSTAND_THIS_CREATES_REAL_BOOKINGS。
   live_enabled: true
   max_successful_bookings: 2
-  max_submission_attempts: 2
+  # “最多两笔”由 max_successful_bookings 控制；失败重试使用独立上限。
+  max_failed_submission_attempts: 6
+  # 同场连续两小时使用两个独立预约页同时提交，减少第一笔成功后的切页损耗。
+  parallel_consecutive_bookings: true
   venue_priority: [2, 3, 1, 4, 5, 6]
   time_groups:
     - name: afternoon
