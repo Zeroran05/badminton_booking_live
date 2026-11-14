@@ -24,8 +24,9 @@ booking:
   max_successful_bookings: 2
   # “最多两笔”由 max_successful_bookings 控制；失败重试使用独立上限。
   max_failed_submission_attempts: 6
-  # 学校预约页在同一浏览器的第二个标签中可能不发送提交请求，默认使用稳定的串行模式。
-  parallel_consecutive_bookings: false
+  # 实验分支：浏览器负责登录和生成真实请求模板，两个小时由接口并发提交。
+  parallel_consecutive_bookings: true
+  parallel_mode: api
   venue_priority: [2, 3, 1, 4, 5, 6]
   time_groups:
     - name: afternoon

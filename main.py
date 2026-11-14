@@ -23,10 +23,12 @@ from booking_page import (
 )
 from browser import create_browser, install_dry_run_network_guard
 from live_booking import (
+    SubmissionRequestTemplate,
     is_release_not_open_message,
     is_transient_selection_conflict_message,
     scan_all_venues,
     select_booking_choice,
+    submit_booking_via_api,
     submit_selected_booking,
     tomorrow_iso,
 )
@@ -442,6 +444,115 @@ async def attempt_parallel_pair(
     ]
 
 
+async def attempt_api_parallel_pair(
+    page,
+    plan: BookingPlan,
+    target_date: str,
+    phone: str,
+    logger,
+    deadline: datetime,
+    retry_interval_seconds: float,
+):
+    """Capture the SPA request once, then race both hours through its API."""
+    first_venue, first_slot = plan.selections[0]
+    await prepare_booking_selection(
+        page, phone, first_venue, target_date, first_slot, logger
+    )
+    captured: list[SubmissionRequestTemplate] = []
+    first_result = await submit_selected_booking(
+        page,
+        first_venue,
+        target_date,
+        first_slot,
+        ROOT,
+        logger,
+        success_wait_ms=0,
+        request_template_sink=captured,
+    )
+    gate_rejections = [0, 0]
+    results: list[BookingAttemptResult | None] = [None, None]
+    pending: set[int] = {1}
+
+    if is_release_not_open_message(first_result.message):
+        gate_rejections[0] += 1
+        pending.add(0)
+    else:
+        results[0] = first_result
+
+    if not captured:
+        logger.warning("API parallel template was not captured; using sequential fallback")
+        if results[0] is None:
+            return None
+        results[1] = BookingAttemptResult(
+            False,
+            plan.selections[1][0],
+            plan.selections[1][1],
+            target_date,
+            "API request template unavailable",
+            None,
+        )
+        return [
+            (page, venue, slot, result, gate_rejections[index])
+            for index, ((venue, slot), result) in enumerate(zip(plan.selections, results))
+        ]
+
+    template = captured[-1]
+    logger.info("API parallel armed: %s", plan.selections)
+    while pending and datetime.now().astimezone() <= deadline:
+        indices = sorted(pending)
+        raw_results = await asyncio.gather(
+            *(
+                submit_booking_via_api(
+                    page,
+                    template,
+                    plan.selections[index][0],
+                    target_date,
+                    plan.selections[index][1],
+                    logger,
+                )
+                for index in indices
+            ),
+            return_exceptions=True,
+        )
+        for index, raw in zip(indices, raw_results):
+            venue, slot = plan.selections[index]
+            if isinstance(raw, BaseException):
+                logger.warning(
+                    "API_PARALLEL_LANE_ERROR venue=%d slot=%s error=%s",
+                    venue,
+                    slot,
+                    raw,
+                )
+                results[index] = BookingAttemptResult(
+                    False,
+                    venue,
+                    slot,
+                    target_date,
+                    f"{type(raw).__name__}: {raw}",
+                    None,
+                )
+                pending.discard(index)
+            elif is_release_not_open_message(raw.message):
+                gate_rejections[index] += 1
+                logger.warning(
+                    "API_RELEASE_NOT_OPEN lane=%d venue=%d slot=%s rejection=%d",
+                    index + 1,
+                    venue,
+                    slot,
+                    gate_rejections[index],
+                )
+            else:
+                results[index] = raw
+                pending.discard(index)
+        if pending:
+            await asyncio.sleep(retry_interval_seconds)
+
+    return [
+        (page, venue, slot, results[index], gate_rejections[index])
+        for index, (venue, slot) in enumerate(plan.selections)
+    ]
+
+
 async def run(args: argparse.Namespace) -> int:
     load_dotenv(ROOT / ".env")
     logger = setup_logger(ROOT / "logs")
@@ -605,19 +716,38 @@ async def run(args: argparse.Namespace) -> int:
                         and not serial_fallback_active,
                     )
                     if parallel_attempted:
-                        parallel_results = await attempt_parallel_pair(
-                            context,
-                            page,
-                            plan,
-                            target_date,
-                            phone,
-                            config,
-                            logger,
-                            username,
-                            password,
-                            deadline,
-                            float(retry_cfg.get("release_retry_interval_seconds", 0.1)),
-                        )
+                        if booking_cfg.get("parallel_mode") == "api":
+                            parallel_results = await attempt_api_parallel_pair(
+                                page,
+                                plan,
+                                target_date,
+                                phone,
+                                logger,
+                                deadline,
+                                float(
+                                    retry_cfg.get(
+                                        "release_retry_interval_seconds", 0.1
+                                    )
+                                ),
+                            )
+                        else:
+                            parallel_results = await attempt_parallel_pair(
+                                context,
+                                page,
+                                plan,
+                                target_date,
+                                phone,
+                                config,
+                                logger,
+                                username,
+                                password,
+                                deadline,
+                                float(
+                                    retry_cfg.get(
+                                        "release_retry_interval_seconds", 0.1
+                                    )
+                                ),
+                            )
                         if parallel_results is None:
                             serial_fallback_active = True
                             logger.warning(

@@ -3,6 +3,8 @@ from __future__ import annotations
 import logging
 import re
 import time
+from copy import deepcopy
+from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -13,6 +15,15 @@ from models import Availability, BookingAttemptResult, BookingError, BookingStat
 
 
 EXPECTED_SLOTS = [f"{hour:02d}:00-{hour + 1:02d}:00" for hour in range(8, 22)]
+
+
+@dataclass(slots=True)
+class SubmissionRequestTemplate:
+    """In-memory clone of the website's authenticated booking request."""
+
+    url: str
+    headers: dict[str, str]
+    payload: dict[str, Any]
 
 
 def is_release_not_open_message(message: str) -> bool:
@@ -212,6 +223,7 @@ async def submit_selected_booking(
     response_timeout_ms: int = 2_000,
     request_start_timeout_ms: int = 300,
     success_wait_ms: int = 500,
+    request_template_sink: list[SubmissionRequestTemplate] | None = None,
 ) -> BookingAttemptResult:
     submit = page.locator("button").filter(has_text=re.compile(r"提\s*交")).first
     if not await submit.count() or not await submit.is_enabled():
@@ -237,8 +249,34 @@ async def submit_selected_booking(
                     timeout=request_start_timeout_ms,
                 ) as request_info:
                     await submit.click()
-                await request_info.value
+                submission_request = await request_info.value
                 request_observed = True
+                if request_template_sink is not None:
+                    try:
+                        payload = submission_request.post_data_json
+                        headers = await submission_request.all_headers()
+                        allowed_headers = {
+                            key: value
+                            for key, value in headers.items()
+                            if key.lower() in {
+                                "authorization",
+                                "content-type",
+                                "origin",
+                                "referer",
+                                "token",
+                            }
+                            or key.lower().startswith("x-")
+                        }
+                        if isinstance(payload, dict):
+                            request_template_sink.append(
+                                SubmissionRequestTemplate(
+                                    submission_request.url,
+                                    allowed_headers,
+                                    deepcopy(payload),
+                                )
+                            )
+                    except Exception as exc:
+                        logger.warning("Could not capture submission template: %s", exc)
             except PlaywrightTimeoutError as exc:
                 logger.warning(
                     "SUBMISSION_NOT_SENT venue=%d slot=%s timeout_ms=%d",
@@ -304,6 +342,51 @@ async def submit_selected_booking(
             path=str(root / "screenshots" / f"submit_result_{venue}_{slot[:2]}_{stamp}.png"),
             full_page=True,
         )
+    return BookingAttemptResult(success, venue, slot, target_date, message, code)
+
+
+async def submit_booking_via_api(
+    page: Page,
+    template: SubmissionRequestTemplate,
+    venue: int,
+    target_date: str,
+    slot: str,
+    logger: logging.Logger,
+    timeout_ms: int = 2_000,
+) -> BookingAttemptResult:
+    """Submit one booking through the same authenticated endpoint used by the SPA."""
+    payload = deepcopy(template.payload)
+    payload["bookingDate"] = target_date
+    payload["bookingTime"] = slot_to_input_value(slot)
+    try:
+        response = await page.context.request.post(
+            template.url,
+            data=payload,
+            headers=template.headers,
+            timeout=timeout_ms,
+        )
+        body: Any = await response.json()
+    except PlaywrightTimeoutError as exc:
+        raise BookingError(
+            BookingStatus.NETWORK_ERROR,
+            "API submission response timed out",
+        ) from exc
+    except Exception as exc:
+        raise BookingError(
+            BookingStatus.NETWORK_ERROR,
+            f"API submission failed: {type(exc).__name__}",
+        ) from exc
+
+    code = body.get("code") if isinstance(body, dict) else None
+    message = str(body.get("msg", "")) if isinstance(body, dict) else "Invalid response"
+    success = code == 0
+    logger.info(
+        "API submission result venue=%d slot=%s code=%s message=%s",
+        venue,
+        slot,
+        code,
+        message,
+    )
     return BookingAttemptResult(success, venue, slot, target_date, message, code)
 
 
