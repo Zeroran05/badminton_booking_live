@@ -28,6 +28,15 @@ def is_transient_selection_conflict_message(message: str) -> bool:
     return "时间已被选中" in normalized and "选择其他时间" in normalized
 
 
+def should_capture_submission_result(
+    success: bool,
+    message: str,
+    capture_gate_rejection: bool,
+) -> bool:
+    """Keep final evidence while skipping repetitive release-gate screenshots."""
+    return success or not is_release_not_open_message(message) or capture_gate_rejection
+
+
 def slot_to_input_value(slot: str) -> str:
     return slot.split("-", 1)[0] + ":00"
 
@@ -198,27 +207,63 @@ async def submit_selected_booking(
     slot: str,
     root: Path,
     logger: logging.Logger,
+    capture_before: bool = True,
+    capture_gate_rejection: bool = True,
+    response_timeout_ms: int = 2_000,
+    request_start_timeout_ms: int = 300,
+    success_wait_ms: int = 500,
 ) -> BookingAttemptResult:
     submit = page.locator("button").filter(has_text=re.compile(r"提\s*交")).first
     if not await submit.count() or not await submit.is_enabled():
         raise BookingError(BookingStatus.PAGE_STRUCTURE_CHANGED, "Submit button is missing or disabled")
 
     stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    await page.screenshot(
-        path=str(root / "screenshots" / f"before_submit_{venue}_{slot[:2]}_{stamp}.png"),
-        full_page=True,
-    )
+    if capture_before:
+        await page.screenshot(
+            path=str(root / "screenshots" / f"before_submit_{venue}_{slot[:2]}_{stamp}.png"),
+            full_page=True,
+        )
+    request_observed = False
     try:
         async with page.expect_response(
             lambda response: "confirmBdmInfo" in response.url
             and response.request.method == "POST",
-            timeout=20_000,
+            timeout=response_timeout_ms,
         ) as response_info:
-            await submit.click()
+            try:
+                async with page.expect_request(
+                    lambda request: "confirmBdmInfo" in request.url
+                    and request.method == "POST",
+                    timeout=request_start_timeout_ms,
+                ) as request_info:
+                    await submit.click()
+                await request_info.value
+                request_observed = True
+            except PlaywrightTimeoutError as exc:
+                logger.warning(
+                    "SUBMISSION_NOT_SENT venue=%d slot=%s timeout_ms=%d",
+                    venue,
+                    slot,
+                    request_start_timeout_ms,
+                )
+                raise BookingError(
+                    BookingStatus.NETWORK_ERROR,
+                    "Submission request was not sent (request_sent=false)",
+                ) from exc
         response = await response_info.value
         payload: Any = await response.json()
     except PlaywrightTimeoutError as exc:
-        raise BookingError(BookingStatus.NETWORK_ERROR, "Submission response timed out") from exc
+        logger.warning(
+            "SUBMISSION_TIMEOUT venue=%d slot=%s request_sent=%s timeout_ms=%d",
+            venue,
+            slot,
+            request_observed,
+            response_timeout_ms,
+        )
+        raise BookingError(
+            BookingStatus.NETWORK_ERROR,
+            f"Submission response timed out (request_sent={str(request_observed).lower()})",
+        ) from exc
 
     code = payload.get("code") if isinstance(payload, dict) else None
     message = str(payload.get("msg", "")) if isinstance(payload, dict) else "Invalid response"
@@ -230,11 +275,35 @@ async def submit_selected_booking(
         code,
         message,
     )
-    await page.wait_for_timeout(500)
-    await page.screenshot(
-        path=str(root / "screenshots" / f"submit_result_{venue}_{slot[:2]}_{stamp}.png"),
-        full_page=True,
-    )
+    release_gate_rejection = not success and is_release_not_open_message(message)
+    if success:
+        # The successful response normally navigates to the progress page.
+        if success_wait_ms > 0:
+            await page.wait_for_timeout(success_wait_ms)
+    elif release_gate_rejection:
+        # Do not pay a fixed 500 ms on every gate probe. Resume as soon as Vue
+        # has re-enabled the existing submit button, with a short safety cap.
+        ready_deadline = time.monotonic() + 0.25
+        while time.monotonic() < ready_deadline:
+            try:
+                if await submit.count() and await submit.is_enabled():
+                    break
+            except Exception:
+                break
+            await page.wait_for_timeout(20)
+    else:
+        # Give a real rejection toast enough time to render for diagnostics.
+        await page.wait_for_timeout(150)
+
+    if should_capture_submission_result(
+        success,
+        message,
+        capture_gate_rejection,
+    ):
+        await page.screenshot(
+            path=str(root / "screenshots" / f"submit_result_{venue}_{slot[:2]}_{stamp}.png"),
+            full_page=True,
+        )
     return BookingAttemptResult(success, venue, slot, target_date, message, code)
 
 

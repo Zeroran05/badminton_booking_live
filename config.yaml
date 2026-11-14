@@ -24,8 +24,8 @@ booking:
   max_successful_bookings: 2
   # “最多两笔”由 max_successful_bookings 控制；失败重试使用独立上限。
   max_failed_submission_attempts: 6
-  # 同场连续两小时使用两个独立预约页同时提交，减少第一笔成功后的切页损耗。
-  parallel_consecutive_bookings: true
+  # 学校预约页在同一浏览器的第二个标签中可能不发送提交请求，默认使用稳定的串行模式。
+  parallel_consecutive_bookings: false
   venue_priority: [2, 3, 1, 4, 5, 6]
   time_groups:
     - name: afternoon
@@ -48,8 +48,8 @@ scheduler:
   daily_at: "08:00:00"
   browser_preopen_seconds: 60
   # 服务器开放时钟可能比本机慢数秒；该提示不占用两次预约提交额度。
-  release_retry_interval_seconds: 0.5
-  retry_interval_seconds: 3
+  release_retry_interval_seconds: 0.1
+  retry_interval_seconds: 0.1
   retry_window_seconds: 120
 
 safety:

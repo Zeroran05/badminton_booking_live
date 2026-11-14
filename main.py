@@ -31,7 +31,7 @@ from live_booking import (
     tomorrow_iso,
 )
 from logger import setup_logger
-from models import BookingError, BookingPlan, BookingStatus
+from models import BookingAttemptResult, BookingError, BookingPlan, BookingStatus
 from portal import open_booking_page
 from scheduler import schedule_times, wait_until
 from strategy import choose_continuation_plan, choose_plan
@@ -150,6 +150,65 @@ async def reset_booking_form_after_rejection(
         return False
 
 
+def booking_record_matches(row_text: str, venue: int, target_date: str, slot: str) -> bool:
+    """Match one progress-query row without depending on table column layout."""
+    normalized = "".join(row_text.split()).replace("—", "-").replace("–", "-")
+    start_hour, end_hour = (int(part.split(":", 1)[0]) for part in slot.split("-", 1))
+    slot_tokens = {
+        f"{start_hour}点-{end_hour}点",
+        f"{start_hour}点--{end_hour}点",
+    }
+    return (
+        target_date in normalized
+        and f"{venue}号羽毛球场" in normalized
+        and any(token in normalized for token in slot_tokens)
+        and "成功预约" in normalized
+    )
+
+
+def is_ambiguous_submission_timeout(result: BookingAttemptResult) -> bool:
+    """A response-less submit needs reconciliation and a fresh form, not a fatal exit."""
+    return result.response_code is None and any(
+        marker in result.message
+        for marker in (
+            "Submission response timed out",
+            "Submission request was not sent",
+        )
+    )
+
+
+async def confirm_booking_in_progress(
+    page, venue: int, target_date: str, slot: str, logger
+) -> bool:
+    """Resolve an ambiguous submit timeout from the service progress table."""
+    if page.is_closed():
+        return False
+    try:
+        progress_tab = page.get_by_text("进度查询", exact=True).first
+        if await progress_tab.count() and await progress_tab.is_visible():
+            await progress_tab.click()
+            await page.wait_for_timeout(350)
+        rows = await page.locator("tbody tr").all_inner_texts()
+        confirmed = any(
+            booking_record_matches(row, venue, target_date, slot) for row in rows
+        )
+        logger.info(
+            "Parallel timeout reconciliation venue=%d slot=%s confirmed=%s",
+            venue,
+            slot,
+            confirmed,
+        )
+        return confirmed
+    except Exception as exc:
+        logger.warning(
+            "Could not reconcile parallel timeout venue=%d slot=%s: %s",
+            venue,
+            slot,
+            exc,
+        )
+        return False
+
+
 def should_parallelize_plan(
     plan: BookingPlan,
     completed: set[tuple[int, str]],
@@ -222,14 +281,28 @@ async def submit_until_release_opens(
     retry_interval_seconds: float,
     logger,
     lane: int,
+    response_timeout_ms: int = 2_000,
 ):
     """Submit one prepared form until the server gate opens or rejects it normally."""
     gate_rejections = 0
     result = None
+    probe_index = 0
     while datetime.now().astimezone() <= deadline:
         result = await submit_selected_booking(
-            page, venue, target_date, slot, ROOT, logger
+            page,
+            venue,
+            target_date,
+            slot,
+            ROOT,
+            logger,
+            capture_before=probe_index == 0,
+            capture_gate_rejection=probe_index == 0,
+            response_timeout_ms=response_timeout_ms,
+            # A successful lane is settled independently; the other lane must
+            # not wait for its progress-page navigation before submitting.
+            success_wait_ms=0,
         )
+        probe_index += 1
         if result.success or not is_release_not_open_message(result.message):
             break
         gate_rejections += 1
@@ -257,7 +330,7 @@ async def attempt_parallel_pair(
     deadline: datetime,
     retry_interval_seconds: float,
 ):
-    """Prepare and submit the two hours concurrently on separate pages."""
+    """Pre-arm two pages and let both probe the release gate independently."""
     secondary_page = None
     try:
         secondary_page = await open_parallel_booking_form(
@@ -291,10 +364,12 @@ async def attempt_parallel_pair(
                 pass
         return None
 
-    # Once either live submission begins, do not silently fall back: one lane
-    # may already have succeeded even if the other raises a network error.
+    # Both pages are equal release probes. If the service leaves either request
+    # pending, return_exceptions keeps the healthy lane running and the caller
+    # reconciles the timed-out lane before switching to sequential fallback.
     logger.info("Parallel pair armed: %s", plan.selections)
-    submissions = await asyncio.gather(
+    logger.info("Both parallel lanes are probing the release gate independently")
+    raw_submissions = await asyncio.gather(
         *(
             submit_until_release_opens(
                 worker_page,
@@ -305,12 +380,60 @@ async def attempt_parallel_pair(
                 retry_interval_seconds,
                 logger,
                 lane,
+                response_timeout_ms=2_000,
             )
             for lane, (worker_page, (venue, slot)) in enumerate(
                 zip(pages, plan.selections), start=1
             )
-        )
+        ),
+        return_exceptions=True,
     )
+    submissions = []
+    for worker_page, (venue, slot), raw in zip(
+        pages, plan.selections, raw_submissions
+    ):
+        if not isinstance(raw, BaseException):
+            submissions.append(raw)
+            continue
+        if isinstance(raw, asyncio.CancelledError):
+            raise raw
+        logger.warning(
+            "PARALLEL_LANE_ERROR venue=%d slot=%s error=%s",
+            venue,
+            slot,
+            raw,
+        )
+        confirmed = await confirm_booking_in_progress(
+            worker_page, venue, target_date, slot, logger
+        )
+        if confirmed:
+            submissions.append(
+                (
+                    BookingAttemptResult(
+                        True,
+                        venue,
+                        slot,
+                        target_date,
+                        "success confirmed from progress query",
+                        0,
+                    ),
+                    0,
+                )
+            )
+        else:
+            submissions.append(
+                (
+                    BookingAttemptResult(
+                        False,
+                        venue,
+                        slot,
+                        target_date,
+                        f"{type(raw).__name__}: {raw}",
+                        None,
+                    ),
+                    0,
+                )
+            )
     return [
         (worker_page, venue, slot, result, gate_rejections)
         for worker_page, (venue, slot), (result, gate_rejections) in zip(
@@ -393,6 +516,7 @@ async def run(args: argparse.Namespace) -> int:
             release_gate_rejections = 0
             continuation_slots: list[str] = []
             continuation_preferred_venue: int | None = None
+            serial_fallback_active = False
             cycle = 0
 
             while datetime.now().astimezone() <= deadline:
@@ -473,12 +597,14 @@ async def run(args: argparse.Namespace) -> int:
                     logger.info("Attempting plan: %s", plan)
                     release_gate_blocked = False
                     parallel_results = None
-                    if should_parallelize_plan(
+                    parallel_attempted = should_parallelize_plan(
                         plan,
                         completed,
                         effective_max,
-                        bool(booking_cfg.get("parallel_consecutive_bookings", True)),
-                    ):
+                        bool(booking_cfg.get("parallel_consecutive_bookings", False))
+                        and not serial_fallback_active,
+                    )
+                    if parallel_attempted:
                         parallel_results = await attempt_parallel_pair(
                             context,
                             page,
@@ -490,13 +616,20 @@ async def run(args: argparse.Namespace) -> int:
                             username,
                             password,
                             deadline,
-                            float(retry_cfg.get("release_retry_interval_seconds", 0.5)),
+                            float(retry_cfg.get("release_retry_interval_seconds", 0.1)),
                         )
+                        if parallel_results is None:
+                            serial_fallback_active = True
+                            logger.warning(
+                                "SERIAL_FALLBACK_ACTIVE: parallel preparation failed; "
+                                "all remaining attempts will use the sequential strategy"
+                            )
 
                     if parallel_results is not None:
                         reusable_page = None
                         pending_slots: list[str] = []
                         preferred_venue = plan.selections[0][0]
+                        parallel_degraded = False
                         for worker_page, venue, slot, result, gate_rejections in parallel_results:
                             release_gate_rejections += gate_rejections
                             if result is None or (
@@ -516,10 +649,17 @@ async def run(args: argparse.Namespace) -> int:
                                 continue
 
                             pending_slots.append(slot)
+                            parallel_degraded = True
+                            ambiguous_timeout = is_ambiguous_submission_timeout(result)
                             transient_selection_conflict = (
                                 is_transient_selection_conflict_message(result.message)
                             )
-                            if transient_selection_conflict:
+                            if ambiguous_timeout:
+                                logger.warning(
+                                    "PARALLEL_TIMEOUT_UNCONFIRMED: retrying without consuming "
+                                    "the failed-submission limit"
+                                )
+                            elif transient_selection_conflict:
                                 logger.warning(
                                     "TRANSIENT_SELECTION_CONFLICT: parallel form residue; "
                                     "resetting without consuming the failure limit"
@@ -535,10 +675,29 @@ async def run(args: argparse.Namespace) -> int:
                                 failed_submission_attempts,
                                 max_failed_submission_attempts,
                             )
-                            if await reset_booking_form_after_rejection(
+                            if ambiguous_timeout:
+                                logger.warning(
+                                    "Discarding timed-out parallel page before retrying "
+                                    "venue=%d slot=%s",
+                                    venue,
+                                    slot,
+                                )
+                                if not worker_page.is_closed():
+                                    try:
+                                        await worker_page.close()
+                                    except Exception:
+                                        pass
+                            elif await reset_booking_form_after_rejection(
                                 worker_page, config, logger, username, password
                             ):
                                 reusable_page = worker_page
+
+                        if parallel_degraded:
+                            serial_fallback_active = True
+                            logger.warning(
+                                "SERIAL_FALLBACK_ACTIVE: parallel submission was incomplete; "
+                                "all remaining attempts will use the sequential strategy"
+                            )
 
                         if len(completed) >= effective_max:
                             logger.info("Booking target achieved in parallel: %s", sorted(completed))
@@ -567,7 +726,7 @@ async def run(args: argparse.Namespace) -> int:
                                 logger.info("Single-scan mode finished")
                                 break
                             await asyncio.sleep(
-                                float(retry_cfg.get("release_retry_interval_seconds", 0.5))
+                                float(retry_cfg.get("release_retry_interval_seconds", 0.1))
                             )
                             continue
 
@@ -575,7 +734,8 @@ async def run(args: argparse.Namespace) -> int:
                             continuation_slots = pending_slots
                             continuation_preferred_venue = preferred_venue
                             logger.info(
-                                "Parallel pair partially succeeded; retrying adjacent hour: %s",
+                                "Parallel pair partially succeeded; retrying adjacent hour "
+                                "sequentially: %s",
                                 continuation_slots,
                             )
                             continue
@@ -583,7 +743,7 @@ async def run(args: argparse.Namespace) -> int:
                         if failed_submission_attempts >= max_failed_submission_attempts:
                             logger.error("Failed submission attempt limit reached")
                             break
-                        await asyncio.sleep(float(retry_cfg.get("retry_interval_seconds", 3)))
+                        await asyncio.sleep(float(retry_cfg.get("retry_interval_seconds", 0.1)))
                         continue
 
                     for selection_index, (venue, slot) in enumerate(plan.selections):
@@ -613,10 +773,43 @@ async def run(args: argparse.Namespace) -> int:
                         # closed. Re-scanning and changing venues here leaves the previous
                         # Vue radio state behind and can trigger "此时间已被选中".
                         result = None
+                        probe_index = 0
                         while datetime.now().astimezone() <= deadline:
-                            result = await submit_selected_booking(
-                                page, venue, target_date, slot, ROOT, logger
-                            )
+                            try:
+                                result = await submit_selected_booking(
+                                    page,
+                                    venue,
+                                    target_date,
+                                    slot,
+                                    ROOT,
+                                    logger,
+                                    capture_before=probe_index == 0,
+                                    capture_gate_rejection=probe_index == 0,
+                                    # Once one booking is already secured, a silent
+                                    # follow-up must recover quickly rather than block
+                                    # the remaining retry window for 20 seconds.
+                                    response_timeout_ms=2_000,
+                                )
+                            except BookingError as exc:
+                                if exc.status is not BookingStatus.NETWORK_ERROR:
+                                    raise
+                                confirmed = await confirm_booking_in_progress(
+                                    page, venue, target_date, slot, logger
+                                )
+                                result = BookingAttemptResult(
+                                    confirmed,
+                                    venue,
+                                    slot,
+                                    target_date,
+                                    (
+                                        "success confirmed from progress query"
+                                        if confirmed
+                                        else str(exc)
+                                    ),
+                                    0 if confirmed else None,
+                                )
+                                break
+                            probe_index += 1
                             if result.success or not is_release_not_open_message(result.message):
                                 break
                             release_gate_rejections += 1
@@ -630,7 +823,7 @@ async def run(args: argparse.Namespace) -> int:
                                 release_gate_blocked = True
                                 break
                             await asyncio.sleep(
-                                float(retry_cfg.get("release_retry_interval_seconds", 0.5))
+                                float(retry_cfg.get("release_retry_interval_seconds", 0.1))
                             )
 
                         if result is None:
@@ -670,10 +863,16 @@ async def run(args: argparse.Namespace) -> int:
                                         context, portal_page, config, logger, username, password
                                     )
                         else:
+                            ambiguous_timeout = is_ambiguous_submission_timeout(result)
                             transient_selection_conflict = (
                                 is_transient_selection_conflict_message(result.message)
                             )
-                            if transient_selection_conflict:
+                            if ambiguous_timeout:
+                                logger.warning(
+                                    "SUBMISSION_TIMEOUT_UNCONFIRMED: retrying without consuming "
+                                    "the failed-submission limit"
+                                )
+                            elif transient_selection_conflict:
                                 logger.warning(
                                     "TRANSIENT_SELECTION_CONFLICT: stale form selection detected; "
                                     "resetting without consuming the failure limit"
@@ -689,7 +888,25 @@ async def run(args: argparse.Namespace) -> int:
                                 failed_submission_attempts,
                                 max_failed_submission_attempts,
                             )
-                            if not await reset_booking_form_after_rejection(
+                            if ambiguous_timeout:
+                                logger.warning(
+                                    "Discarding timed-out booking page before retrying "
+                                    "venue=%d slot=%s",
+                                    venue,
+                                    slot,
+                                )
+                                if not page.is_closed():
+                                    try:
+                                        await page.close()
+                                    except Exception:
+                                        pass
+                                portal_page = await prepare_portal_page(
+                                    context, config, logger, username, password
+                                )
+                                page = await open_booking_service(
+                                    context, portal_page, config, logger, username, password
+                                )
+                            elif not await reset_booking_form_after_rejection(
                                 page, config, logger, username, password
                             ):
                                 portal_page = await prepare_portal_page(
@@ -705,7 +922,7 @@ async def run(args: argparse.Namespace) -> int:
                             logger.info("Single-scan mode finished")
                             break
                         await asyncio.sleep(
-                            float(retry_cfg.get("release_retry_interval_seconds", 0.5))
+                            float(retry_cfg.get("release_retry_interval_seconds", 0.1))
                         )
                         continue
 
@@ -728,7 +945,7 @@ async def run(args: argparse.Namespace) -> int:
                 if failed_submission_attempts >= max_failed_submission_attempts:
                     logger.error("Failed submission attempt limit reached")
                     break
-                await asyncio.sleep(float(retry_cfg.get("retry_interval_seconds", 3)))
+                await asyncio.sleep(float(retry_cfg.get("retry_interval_seconds", 0.1)))
 
             if completed:
                 logger.warning("PARTIAL_SUCCESS: %s", sorted(completed))

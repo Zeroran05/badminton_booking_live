@@ -5,7 +5,12 @@ import pytest
 from availability import build_availability, classify_slot, normalize_slot
 from booking_page import submission_blocked
 from models import Availability, BookingPlan, SlotStatus
-from main import should_parallelize_plan
+from main import (
+    booking_record_matches,
+    is_ambiguous_submission_timeout,
+    should_parallelize_plan,
+)
+from models import BookingAttemptResult
 from strategy import choose_continuation_plan, choose_plan
 from browser import NetworkObserver
 from live_booking import has_consecutive_pair, slot_to_input_value
@@ -131,6 +136,39 @@ def test_parallel_path_rejects_different_venues_or_existing_success() -> None:
     assert not should_parallelize_plan(
         same, {(2, "14:00-15:00")}, effective_max=2, enabled=True
     )
+    assert not should_parallelize_plan(same, set(), effective_max=2, enabled=False)
+
+
+def test_progress_row_confirms_ambiguous_parallel_success() -> None:
+    row = "3号羽毛球场 2026-11-13 16点--17点 个人 成功预约"
+    assert booking_record_matches(row, 3, "2026-11-13", "16:00-17:00")
+    assert not booking_record_matches(row, 3, "2026-11-13", "15:00-16:00")
+    assert not booking_record_matches(row.replace("成功预约", "审批中"), 3, "2026-11-13", "16:00-17:00")
+
+
+def test_response_less_submission_is_treated_as_ambiguous_timeout() -> None:
+    timed_out = BookingAttemptResult(
+        False,
+        4,
+        "15:00-16:00",
+        "2026-11-14",
+        "Submission response timed out (request_sent=true)",
+        None,
+    )
+    occupied = BookingAttemptResult(
+        False, 4, "15:00-16:00", "2026-11-14", "该时段已被预约", 500
+    )
+    not_sent = BookingAttemptResult(
+        False,
+        4,
+        "15:00-16:00",
+        "2026-11-14",
+        "Submission request was not sent (request_sent=false)",
+        None,
+    )
+    assert is_ambiguous_submission_timeout(timed_out)
+    assert is_ambiguous_submission_timeout(not_sent)
+    assert not is_ambiguous_submission_timeout(occupied)
 
 
 def test_early_stop_detects_highest_priority_pair() -> None:
