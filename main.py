@@ -329,18 +329,22 @@ async def attempt_parallel_pair(
     password: str,
     deadline: datetime,
     retry_interval_seconds: float,
+    prepared_secondary_page=None,
 ):
     """Pre-arm two pages and let both probe the release gate independently."""
-    secondary_page = None
+    secondary_page = prepared_secondary_page
     try:
-        secondary_page = await open_parallel_booking_form(
-            context,
-            primary_page,
-            config,
-            logger,
-            username,
-            password,
-        )
+        if secondary_page is None:
+            secondary_page = await open_parallel_booking_form(
+                context,
+                primary_page,
+                config,
+                logger,
+                username,
+                password,
+            )
+        else:
+            logger.info("Using independently authenticated Edge for parallel lane 2")
         pages = [primary_page, secondary_page]
         await asyncio.gather(
             *(
@@ -447,7 +451,9 @@ async def run(args: argparse.Namespace) -> int:
     logger = setup_logger(ROOT / "logs")
     config = load_config(args.config)
     context = None
+    parallel_context = None
     page = None
+    prepared_secondary_page = None
 
     try:
         phone = os.getenv("CONTACT_PHONE", "").strip()
@@ -483,10 +489,67 @@ async def run(args: argparse.Namespace) -> int:
             portal_page = await prepare_portal_page(
                 context, config, logger, username, password
             )
-            await wait_until(target_at, logger, "booking release")
-            page = await open_booking_service(
-                context, portal_page, config, logger, username, password
+            booking_cfg = config["booking"]
+            parallel_portal_page = None
+            independent_parallel = (
+                is_live
+                and bool(booking_cfg.get("parallel_consecutive_bookings", False))
+                and booking_cfg.get("parallel_mode") == "independent_browser"
             )
+            if independent_parallel:
+                parallel_context = await create_browser(
+                    playwright,
+                    config,
+                    ROOT,
+                    logger,
+                    profile_dir=str(
+                        booking_cfg.get(
+                            "parallel_profile_dir", "data/edge_profile_parallel"
+                        )
+                    ),
+                    instance_name="parallel-2",
+                )
+                parallel_portal_page = await prepare_portal_page(
+                    parallel_context, config, logger, username, password
+                )
+                logger.info("Independent parallel Edge authenticated and ready")
+            await wait_until(target_at, logger, "booking release")
+            if parallel_context is not None and parallel_portal_page is not None:
+                opened_services = await asyncio.gather(
+                    open_booking_service(
+                        context, portal_page, config, logger, username, password
+                    ),
+                    open_booking_service(
+                        parallel_context,
+                        parallel_portal_page,
+                        config,
+                        logger,
+                        username,
+                        password,
+                    ),
+                    return_exceptions=True,
+                )
+                if isinstance(opened_services[0], BaseException):
+                    raise opened_services[0]
+                page = opened_services[0]
+                if isinstance(opened_services[1], BaseException):
+                    logger.warning(
+                        "Independent parallel Edge preparation failed; using serial fallback: %s",
+                        opened_services[1],
+                    )
+                    try:
+                        await parallel_context.close()
+                    except Exception:
+                        pass
+                    parallel_context = None
+                    booking_cfg["parallel_consecutive_bookings"] = False
+                else:
+                    prepared_secondary_page = opened_services[1]
+                    logger.info("Both independent booking forms are ready")
+            else:
+                page = await open_booking_service(
+                    context, portal_page, config, logger, username, password
+                )
             if is_live:
                 logger.warning("LIVE MODE ARMED: successful selections will create real bookings")
             else:
@@ -497,7 +560,6 @@ async def run(args: argparse.Namespace) -> int:
             await fill_contact(page, phone, logger)
             await select_semantic_option(page, "个人", BookingStatus.CATEGORY_NOT_FOUND, logger)
 
-            booking_cfg = config["booking"]
             retry_cfg = config["scheduler"]
             venue_priority = [int(item) for item in booking_cfg["venue_priority"]]
             effective_max = int(booking_cfg.get("max_successful_bookings", 2))
@@ -617,6 +679,7 @@ async def run(args: argparse.Namespace) -> int:
                             password,
                             deadline,
                             float(retry_cfg.get("release_retry_interval_seconds", 0.1)),
+                            prepared_secondary_page=prepared_secondary_page,
                         )
                         if parallel_results is None:
                             serial_fallback_active = True
@@ -963,6 +1026,11 @@ async def run(args: argparse.Namespace) -> int:
             await save_failure_artifacts(page, ROOT, logger)
         return 3
     finally:
+        if parallel_context is not None:
+            try:
+                await parallel_context.close()
+            except Exception:
+                pass
         if context is not None:
             try:
                 await context.close()

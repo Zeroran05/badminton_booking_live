@@ -24,8 +24,10 @@ booking:
   max_successful_bookings: 2
   # “最多两笔”由 max_successful_bookings 控制；失败重试使用独立上限。
   max_failed_submission_attempts: 6
-  # 学校预约页在同一浏览器的第二个标签中可能不发送提交请求，默认使用稳定的串行模式。
-  parallel_consecutive_bookings: false
+  # 实验分支：两个小时分别使用完全独立的 Edge 会话，避免双标签共享前端状态。
+  parallel_consecutive_bookings: true
+  parallel_mode: independent_browser
+  parallel_profile_dir: data/edge_profile_parallel
   venue_priority: [2, 3, 1, 4, 5, 6]
   time_groups:
     - name: afternoon

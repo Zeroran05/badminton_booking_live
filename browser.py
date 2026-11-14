@@ -96,13 +96,18 @@ def _json_structure(value: Any, depth: int = 0) -> Any:
 
 
 async def create_browser(
-    playwright: Playwright, config: dict[str, Any], root: Path, logger: logging.Logger
+    playwright: Playwright,
+    config: dict[str, Any],
+    root: Path,
+    logger: logging.Logger,
+    profile_dir: str | None = None,
+    instance_name: str = "primary",
 ) -> BrowserContext:
     browser_cfg = config["browser"]
-    profile = (root / browser_cfg["profile_dir"]).resolve()
+    profile = (root / (profile_dir or browser_cfg["profile_dir"])).resolve()
     profile.mkdir(parents=True, exist_ok=True)
-    logger.info("Starting Microsoft Edge")
-    logger.info("Using persistent profile: %s", profile)
+    logger.info("Starting Microsoft Edge instance=%s", instance_name)
+    logger.info("Using persistent profile instance=%s path=%s", instance_name, profile)
     return await playwright.chromium.launch_persistent_context(
         user_data_dir=str(profile),
         channel=browser_cfg.get("channel", "msedge"),
