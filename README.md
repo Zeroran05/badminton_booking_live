@@ -9,7 +9,8 @@
 - 时间优先级：`15:00–17:00` → `19:00–21:00` → `20:00–22:00` → `10:00–12:00`。
 - 场地优先级：`2 > 3 > 1 > 4 > 5 > 6`。 
 - 优先预约同一场地连续两小时，其次允许不同场地拼成连续两小时，最后才退化为单小时。
-- 第一小时成功、第二小时被抢时，立即按场地优先级尝试其他场地的相邻小时；全部不可用后才选择其他时间段。
+- 连续两小时使用两条已登录的接口通道并行提交；并行无法完成时，保留串行补位逻辑。
+- 只成功一小时时，立即按场地优先级尝试其他场地的相邻小时；全部不可用后才选择其他时间段。
 - 每次运行最多成功两笔；服务器“尚未开放”的临时拒绝不占用预约额度。
 - 第一笔成功后直接返回预约页，不重新绕行信息门户。
 
@@ -36,7 +37,7 @@ Set-Location "C:\path\to\badminton_booking_live"
 - 一键开启定时真实预约，启动前仍需确认一次；
 - 勾选可接受的两小时时间段、添加 `08:00–22:00` 范围内的自定义连续两小时，并调整尝试顺序；
 - 调整 1–6 号场地的优先级；
-- 修改默认的 `70` 秒延时；
+- 调整开放探测延时（默认 `0` 秒，即 `08:00:00` 开始）；
 - 立即运行安全测试、查看实时日志和停止任务。
 
 页面设置自动保存在 `data/ui_settings.json`，未调整时使用 `config.yaml` 的现有默认值。`data/` 已被 Git 忽略，不会上传个人偏好。控制页面运行期间请保持终端窗口开启；macOS 上从页面启动任务时会自动使用 `caffeinate -is`。
@@ -63,19 +64,20 @@ macOS 控制页面中可以勾选“每天 07:57 自动唤醒 Mac”，然后点
 - 该选项会替换 macOS 当前已有的重复唤醒计划；
 - 自动唤醒不能输入登录密码，也不能保证普通合盖状态下可靠唤醒。最可靠状态仍是接电、开盖、用户已登录并锁屏。
 
-## 为什么标准延时是 70 秒
+## 服务器开放时间与延时设置
 
-网站标称每天 `08:00` 开放次日预约，但连续三天的提交日志显示，后端实际放行时间稳定在本机时间 `08:01:17` 左右：
+网站标称每天 `08:00` 开放次日预约，但后端实际放行时间会变化，不适合再使用固定 `70` 秒延时。已观察到的时间包括：
 
 | 日期 | 最后一次拒绝 | 第一次成功 |
 |---|---:|---:|
 | 2026-10-05 | 08:01:15.299 | 08:01:17.124 |
 | 2026-10-06 | 08:01:15.392 | 08:01:17.173 |
 | 2026-10-07 | 08:01:16.372 | 08:01:18.435 |
+| 2026-11-15 | 08:00:11.937 | 08:00:12.141–08:00:12.154 |
 
-因此标准命令使用 `--release-delay-seconds 70`：程序仍在 `07:59` 打开并登录门户，但到 `08:01:10` 才进入预约板块。页面处理和首次扫描约需两秒，随后程序会继续短间隔重试，兼顾速度并显著减少开放前的无效请求。
+因此当前标准设置是 `--release-delay-seconds 0`：程序在 `07:59` 预先打开并登录门户，从 `08:00:00` 开始进入预约流程。如果服务器尚未放行，程序会以短间隔继续探测，“尚未开放”不消耗两次成功预约额度。一旦服务器接受提交，两个小时会并行提交。
 
-`70` 是当前实测推荐值，不是网站官方参数。如果后端开放时间发生变化，可以修改该数字；省略参数时会按标称的 `08:00:00` 进入预约板块。
+`--release-delay-seconds N` 表示在 `08:00:00` 之后再等待 `N` 秒。例如 `70` 代表 `08:01:10` 才开始预约流程。这个参数仅适合临时实验；为避免服务器提前开放时错过场地，建议保持 `0`。省略该参数时默认也是 `0`。
 
 ## 环境要求
 
@@ -114,7 +116,7 @@ cp .env.example .env
 
 ```bash
 cd /path/to/badminton_booking_live
-caffeinate -is env LIVE_BOOKING_CONFIRM=I_UNDERSTAND_THIS_CREATES_REAL_BOOKINGS .venv/bin/python main.py --live --release-delay-seconds 70
+caffeinate -is env LIVE_BOOKING_CONFIRM=I_UNDERSTAND_THIS_CREATES_REAL_BOOKINGS .venv/bin/python main.py --live --release-delay-seconds 0
 ```
 
 `caffeinate -is` 会阻止空闲睡眠，并在接通电源时阻止系统睡眠。MacBook 应接通电源、保持开盖和用户登录，建议使用command+control+Q手动锁屏，但不要合盖和关机。
@@ -138,7 +140,7 @@ Copy-Item .env.example .env
 ```powershell
 Set-Location "C:\path\to\badminton_booking_live"
 $env:LIVE_BOOKING_CONFIRM = "I_UNDERSTAND_THIS_CREATES_REAL_BOOKINGS"
-.\.venv\Scripts\python.exe .\main.py --live --release-delay-seconds 70
+.\.venv\Scripts\python.exe .\main.py --live --release-delay-seconds 0
 ```
 
 运行前请在 Windows“设置 → 系统 → 电源和电池”中确保接通电源时不会自动睡眠。锁屏通常不影响已经运行的程序，但注销、关机或系统睡眠会中断浏览器自动化。
@@ -168,7 +170,7 @@ cp .env.example .env
 
 ```bash
 cd /path/to/badminton_booking_live
-systemd-inhibit --what=sleep --why="Badminton booking" env LIVE_BOOKING_CONFIRM=I_UNDERSTAND_THIS_CREATES_REAL_BOOKINGS .venv/bin/python main.py --live --release-delay-seconds 70
+systemd-inhibit --what=sleep --why="Badminton booking" env LIVE_BOOKING_CONFIRM=I_UNDERSTAND_THIS_CREATES_REAL_BOOKINGS .venv/bin/python main.py --live --release-delay-seconds 0
 ```
 
 Ubuntu 必须保持图形桌面会话登录，并允许 Edge 窗口启动。若系统没有 `systemd-inhibit`，请在电源设置中手动关闭自动睡眠。
@@ -238,10 +240,10 @@ cd /Users/zhuran/badminton_booking_live
 
 ```bash
 cd /Users/zhuran/badminton_booking_live
-caffeinate -is env LIVE_BOOKING_CONFIRM=I_UNDERSTAND_THIS_CREATES_REAL_BOOKINGS .venv/bin/python main.py --live --release-delay-seconds 70
+caffeinate -is env LIVE_BOOKING_CONFIRM=I_UNDERSTAND_THIS_CREATES_REAL_BOOKINGS .venv/bin/python main.py --live --release-delay-seconds 0
 ```
 
-立即真实执行仅用于明确需要现在预约时。`--run-now` 会忽略定时等待和 `70` 秒延时：
+立即真实执行仅用于明确需要现在预约时。`--run-now` 会忽略定时等待和开放延时：
 
 ```bash
 cd /Users/zhuran/badminton_booking_live
@@ -250,7 +252,7 @@ env LIVE_BOOKING_CONFIRM=I_UNDERSTAND_THIS_CREATES_REAL_BOOKINGS .venv/bin/pytho
 
 ## macOS 定时启动（可选）
 
-仓库内的 `launchd/com.zhuran.badminton-booking.plist` 是作者电脑的示例，包含作者本机绝对路径和标准 `70` 秒延时。其他用户使用前必须把其中的 Python 路径、`main.py` 路径、工作目录和日志路径替换为自己的绝对路径。
+仓库内的 `launchd/com.zhuran.badminton-booking.plist` 是作者电脑的示例，包含作者本机绝对路径，并使用标准 `0` 秒延时。其他用户使用前必须把其中的 Python 路径、`main.py` 路径、工作目录和日志路径替换为自己的绝对路径。
 
 安装、检查和卸载：
 
@@ -281,7 +283,7 @@ sudo pmset repeat cancel
 
 可以在仓库根目录把下面这段话直接发给 Codex：
 
-> 请检测当前操作系统，并按照 README 的 macOS、Windows 或 Ubuntu 部署步骤安装此项目。创建项目内的 `.venv`，安装 `requirements.txt` 和 Microsoft Edge Playwright 通道，复制 `.env.example` 为 `.env`，但不要读取、填写或输出任何账号密码，也不要执行 `--live`。最后运行测试并告诉我如何在本机填写 `.env`。正式命令必须保留 `--release-delay-seconds 70`。
+> 请检测当前操作系统，并按照 README 的 macOS、Windows 或 Ubuntu 部署步骤安装此项目。创建项目内的 `.venv`，安装 `requirements.txt` 和 Microsoft Edge Playwright 通道，复制 `.env.example` 为 `.env`，但不要读取、填写或输出任何账号密码，也不要执行 `--live`。最后运行测试并告诉我如何在本机填写 `.env`。正式命令使用 `--release-delay-seconds 0`，从 08:00:00 开始探测。
 
 ## 上传更新到 GitHub
 

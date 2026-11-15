@@ -11,7 +11,7 @@
     <string>/Users/zhuran/badminton_booking_live/main.py</string>
     <string>--live</string>
     <string>--release-delay-seconds</string>
-    <string>70</string>
+    <string>0</string>
   </array>
 
   <key>WorkingDirectory</key>

@@ -7,7 +7,7 @@ import ui_server
 
 def test_default_settings_match_booking_config() -> None:
     settings = ui_server.default_settings()
-    assert settings["release_delay_seconds"] == 70
+    assert settings["release_delay_seconds"] == 0
     assert settings["wake_enabled"] is False
     assert settings["venue_priority"] == [2, 3, 1, 4, 5, 6]
     assert [group["name"] for group in settings["time_groups"]] == [

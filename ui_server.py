@@ -74,7 +74,7 @@ def default_settings() -> dict[str, Any]:
     config = load_config()
     groups = sorted(config["booking"]["time_groups"], key=lambda item: item["priority"])
     return {
-        "release_delay_seconds": 70,
+        "release_delay_seconds": 0,
         "wake_enabled": False,
         "venue_priority": [int(item) for item in config["booking"]["venue_priority"]],
         "time_groups": [
